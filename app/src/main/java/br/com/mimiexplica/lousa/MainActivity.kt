@@ -88,16 +88,6 @@ class MainActivity : AppCompatActivity() {
     private val phones = LinkedHashMap<String, Pair<String, Int>>()
     private lateinit var remote: RemoteCamera
     private lateinit var finder: PhoneFinder
-    private val SITE = "https://mimiliz.github.io/lousa-camera/"
-    private val sala: String by lazy {
-        prefs.getString("sala", null) ?: novoCodigo().also { prefs.edit().putString("sala", it).apply() }
-    }
-    private fun novoCodigo(): String {
-        val abc = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        return (1..6).map { abc[(Math.random() * abc.length).toInt()] }.joinToString("")
-    }
-    private fun salaAtual() = prefs.getString("sala", null) ?: sala
-    private fun linkAluno() = SITE + "?sala=" + salaAtual()
 
     // gravação
     private enum class Rec { PARADO, GRAVANDO, PAUSADO }
@@ -179,9 +169,6 @@ class MainActivity : AppCompatActivity() {
             else if (isNew && camOn && camId == null && rec == Rec.PARADO) toast("$name encontrado: escolha-o em Ajustes › Câmera")
         }
         finder.start()
-        bubble.onWebStatus = { t -> toast(t) }
-        bubble.micAllowed = { prefs.getBoolean("conversa", true) &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED }
 
         if (camOn) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
@@ -191,7 +178,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        remote.stop(); finder.stop(); bubble.destroyWeb()
+        remote.stop(); finder.stop()
         board.release()
         RecordService.onFinished = null; RecordService.onStarted = null
         super.onDestroy()
@@ -381,7 +368,6 @@ class MainActivity : AppCompatActivity() {
             val p = try { f.get() } catch (e: Exception) { null } ?: return@addListener
             provider = p
             camInfos = p.availableCameraInfos
-            if (camId == "internet") { useInternet(); return@addListener }
             if (camId?.startsWith("celular:") == true) {
                 val n = camId!!.removePrefix("celular:")
                 if (phones.containsKey(n)) useRemote(n) else toast("Abra o app Câmera da Lousa no celular para conectar")
@@ -396,53 +382,6 @@ class MainActivity : AppCompatActivity() {
                 toast("Nenhuma câmera USB apareceu: usando a câmera do tablet. Veja em Ajustes.")
             bindCamera(chosen)
         }, ContextCompat.getMainExecutor(this))
-    }
-
-    /** Câmera pela internet: abre a sala e mostra quem entrar pelo link. */
-    private fun useInternet() {
-        provider?.unbindAll(); remote.stop()
-        bubble.visibility = View.VISIBLE
-        layoutCamera()
-        val mic = if (prefs.getBoolean("conversa", true)) "1" else "0"
-        bubble.showWeb(SITE + "receber.html?sala=" + salaAtual() + "&mic=" + mic)
-        if (prefs.getBoolean("conversa", true) &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
-            askAudioForTalk.launch(Manifest.permission.RECORD_AUDIO)
-    }
-    private val askAudioForTalk = registerForActivityResult(ActivityResultContracts.RequestPermission()) { if (camId == "internet") useInternet() }
-
-    private fun invite() {
-        val link = linkAluno()
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(dpi(20f), dpi(10f), dpi(20f), dpi(6f)) }
-        box.addView(ImageView(this).apply { setImageBitmap(Qr.make(link, dpi(240f))) }, LinearLayout.LayoutParams(dpi(240f), dpi(240f)))
-        box.addView(TextView(this).apply {
-            text = "Código da sala: ${salaAtual()}\n$link"; setTextColor(0xFFECEEF2.toInt()); textSize = 15f; gravity = Gravity.CENTER
-            setTextIsSelectable(true); setPadding(0, dpi(12f), 0, dpi(4f))
-        })
-        box.addView(TextView(this).apply {
-            text = "Quem abrir este link no celular aparece na janela da câmera da lousa. O link continua o mesmo: dá para deixar salvo no celular da escola."
-            setTextColor(MUTED); textSize = 13f; gravity = Gravity.CENTER
-        })
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Convidar câmera pela internet").setView(box)
-            .setPositiveButton("Compartilhar link") { _, _ ->
-                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, "Abra este link no celular para mostrar sua câmera na minha lousa: $link")
-                }, "Enviar o link"))
-            }
-            .setNeutralButton("Trocar código") { _, _ ->
-                confirm("Criar um código novo? O link antigo deixa de funcionar.", "Trocar") {
-                    prefs.edit().putString("sala", novoCodigo()).apply()
-                    if (camId == "internet") useInternet()
-                    invite()
-                }
-            }
-            .setNegativeButton("Fechar", null).show()
-        if (camId != "internet") {
-            camId = "internet"; prefs.edit().putString("camId", camId).putBoolean("camOn", true).apply(); camOn = true
-            useInternet()
-        }
     }
 
     private fun useRemote(name: String) {
@@ -672,19 +611,16 @@ class MainActivity : AppCompatActivity() {
         val p = provider
         if (p != null) camInfos = p.availableCameraInfos
         val phoneNames = phones.keys.toList()
-        val labels = camInfos.map { camLabel(it) } + phoneNames.map { "📱 $it" } + listOf("🌐 Pela internet (sala ${salaAtual()})")
+        val labels = camInfos.map { camLabel(it) } + phoneNames.map { "📱 $it" }
         if (labels.isEmpty()) {
             box.addView(TextView(this).apply { text = "Nenhuma câmera encontrada. Conecte a câmera USB e abra os ajustes de novo."; setTextColor(MUTED) })
         } else {
-            val cur = if (camId == "internet") labels.size - 1
-                else if (camId?.startsWith("celular:") == true) camInfos.size + phoneNames.indexOf(camId!!.removePrefix("celular:"))
+            val cur = if (camId?.startsWith("celular:") == true) camInfos.size + phoneNames.indexOf(camId!!.removePrefix("celular:"))
                 else camInfos.indexOfFirst { idOf(it) == camId }
             choices(labels, if (cur < 0) 0 else cur) { i ->
                 if (!camOn) { camOn = true; prefs.edit().putBoolean("camOn", true).apply() }
                 if (i < camInfos.size) {
                     camId = idOf(camInfos[i]); bindCamera(camInfos[i])
-                } else if (i == labels.size - 1) {
-                    camId = "internet"; useInternet()
                 } else {
                     val n = phoneNames[i - camInfos.size]; camId = "celular:$n"; useRemote(n)
                 }
@@ -696,10 +632,6 @@ class MainActivity : AppCompatActivity() {
             setTextColor(MUTED); textSize = 13f; setPadding(0, dpi(2f), 0, dpi(6f))
         })
         if (phoneNames.isEmpty()) choices(listOf("Digitar o endereço do celular"), -1) { askPhoneAddress() }
-        choices(listOf("Convidar câmera pela internet (link e QR code)"), -1) { dialog.dismiss(); invite() }
-        choices(listOf("Aluno me ouve na conversa", "Aluno não me ouve"), if (prefs.getBoolean("conversa", true)) 0 else 1) { i ->
-            prefs.edit().putBoolean("conversa", i == 0).apply(); if (camId == "internet") useInternet()
-        }
         choices(listOf("Redonda", "Retangular"), if (bubble.round) 0 else 1) { i ->
             bubble.round = i == 0; prefs.edit().putBoolean("camRedonda", bubble.round).apply(); layoutCamera()
         }

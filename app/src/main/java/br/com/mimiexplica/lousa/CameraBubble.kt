@@ -7,10 +7,6 @@ import android.graphics.drawable.GradientDrawable
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewOutlineProvider
-import android.webkit.JavascriptInterface
-import android.webkit.PermissionRequest
-import android.webkit.WebChromeClient
-import android.webkit.WebView
 import android.widget.FrameLayout
 import androidx.camera.view.PreviewView
 import kotlin.math.hypot
@@ -26,55 +22,14 @@ class CameraBubble(context: Context) : FrameLayout(context) {
     var round = true
         set(v) { field = v; applyShape() }
     var mirror = false
-        set(v) { field = v; preview.scaleX = if (v) -1f else 1f; remote.scaleX = preview.scaleX; web?.scaleX = preview.scaleX }
+        set(v) { field = v; preview.scaleX = if (v) -1f else 1f; remote.scaleX = preview.scaleX }
 
     /** Alterna entre a câmera do tablet e a imagem que vem do celular. */
     fun showRemote(on: Boolean) {
-        hideWeb()
         remote.visibility = if (on) View.VISIBLE else View.GONE
         preview.visibility = if (on) View.GONE else View.VISIBLE
         if (!on) remote.clear()
     }
-
-    // ---- câmera pela internet: uma página que recebe o vídeo do aluno ----
-    private var web: WebView? = null
-    var onWebStatus: ((String) -> Unit)? = null
-    var micAllowed: () -> Boolean = { false }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    fun showWeb(url: String) {
-        remote.visibility = View.GONE; remote.clear()
-        preview.visibility = View.GONE
-        val w = web ?: WebView(context).also { wv ->
-            wv.settings.javaScriptEnabled = true
-            wv.settings.mediaPlaybackRequiresUserGesture = false
-            wv.settings.domStorageEnabled = true
-            wv.setBackgroundColor(0xFF000000.toInt())
-            wv.addJavascriptInterface(object {
-                @JavascriptInterface fun status(t: String) { post { onWebStatus?.invoke(t) } }
-            }, "Lousa")
-            wv.webChromeClient = object : WebChromeClient() {
-                override fun onPermissionRequest(request: PermissionRequest) {
-                    val ok = request.resources.filter { it == PermissionRequest.RESOURCE_AUDIO_CAPTURE && micAllowed() }
-                    if (ok.isEmpty()) request.deny() else request.grant(ok.toTypedArray())
-                }
-            }
-            web = wv
-            addView(wv, 0, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        }
-        w.visibility = View.VISIBLE
-        w.scaleX = if (mirror) -1f else 1f
-        if (w.url != url) w.loadUrl(url)
-    }
-
-    fun hideWeb() {
-        web?.let { it.loadUrl("about:blank"); it.visibility = View.GONE }
-    }
-
-    fun destroyWeb() { web?.destroy(); web = null }
-
-    // a janela inteira responde aos gestos (a página por dentro não precisa de toques)
-    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean = true
 
     /** Pedido de mudança: deslocamento em pixels de tela e fator de escala. */
     var onGesture: ((dx: Float, dy: Float, scale: Float) -> Unit)? = null
