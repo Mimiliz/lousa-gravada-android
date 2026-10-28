@@ -17,11 +17,19 @@ class CameraBubble(context: Context) : FrameLayout(context) {
         implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         scaleType = PreviewView.ScaleType.FILL_CENTER
     }
+    val remote = FrameView(context).apply { visibility = View.GONE }
     private val ring = GradientDrawable()
     var round = true
         set(v) { field = v; applyShape() }
     var mirror = false
-        set(v) { field = v; preview.scaleX = if (v) -1f else 1f }
+        set(v) { field = v; preview.scaleX = if (v) -1f else 1f; remote.scaleX = preview.scaleX }
+
+    /** Alterna entre a câmera do tablet e a imagem que vem do celular. */
+    fun showRemote(on: Boolean) {
+        remote.visibility = if (on) View.VISIBLE else View.GONE
+        preview.visibility = if (on) View.GONE else View.VISIBLE
+        if (!on) remote.clear()
+    }
 
     /** Pedido de mudança: deslocamento em pixels de tela e fator de escala. */
     var onGesture: ((dx: Float, dy: Float, scale: Float) -> Unit)? = null
@@ -29,6 +37,7 @@ class CameraBubble(context: Context) : FrameLayout(context) {
 
     init {
         addView(preview, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        addView(remote, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         foreground = ring
         clipToOutline = true
         elevation = 8f

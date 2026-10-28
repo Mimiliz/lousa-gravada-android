@@ -84,6 +84,10 @@ class MainActivity : AppCompatActivity() {
     private var camPct = 0.32f
     private var camCx = Float.NaN
     private var camCy = Float.NaN
+    // celulares com o app "Câmera da Lousa" encontrados na rede: nome -> (endereço, porta)
+    private val phones = LinkedHashMap<String, Pair<String, Int>>()
+    private lateinit var remote: RemoteCamera
+    private lateinit var finder: PhoneFinder
 
     // gravação
     private enum class Rec { PARADO, GRAVANDO, PAUSADO }
@@ -156,6 +160,16 @@ class MainActivity : AppCompatActivity() {
         RecordService.onFinished = { uri, msg -> onRecordFinished(uri, msg) }
         RecordService.onStarted = { onRecordStarted() }
 
+        remote = RemoteCamera({ b -> bubble.remote.setFrame(b) }, { m -> toast(m) })
+        finder = PhoneFinder(this) { name, host, port ->
+            val isNew = !phones.containsKey(name)
+            phones[name] = host to port
+            // se o celular escolhido da última vez apareceu, conecta sozinho
+            if (camOn && camId == "celular:$name" && remote.host == null) useRemote(name)
+            else if (isNew && camOn && camId == null && rec == Rec.PARADO) toast("$name encontrado: escolha-o em Ajustes › Câmera")
+        }
+        finder.start()
+
         if (camOn) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
             else askCamera.launch(Manifest.permission.CAMERA)
@@ -164,6 +178,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        remote.stop(); finder.stop()
         board.release()
         RecordService.onFinished = null; RecordService.onStarted = null
         super.onDestroy()
@@ -329,7 +344,7 @@ class MainActivity : AppCompatActivity() {
         if (camOn) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
             else askCamera.launch(Manifest.permission.CAMERA)
-        } else { provider?.unbindAll(); bubble.visibility = View.GONE }
+        } else { provider?.unbindAll(); remote.stop(); bubble.showRemote(false); bubble.visibility = View.GONE }
     }
 
     @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
@@ -353,6 +368,11 @@ class MainActivity : AppCompatActivity() {
             val p = try { f.get() } catch (e: Exception) { null } ?: return@addListener
             provider = p
             camInfos = p.availableCameraInfos
+            if (camId?.startsWith("celular:") == true) {
+                val n = camId!!.removePrefix("celular:")
+                if (phones.containsKey(n)) useRemote(n) else toast("Abra o app Câmera da Lousa no celular para conectar")
+                return@addListener
+            }
             val chosen = camInfos.firstOrNull { idOf(it) == camId }
                 ?: camInfos.firstOrNull { facingOf(it) == CameraCharacteristics.LENS_FACING_EXTERNAL }
                 ?: camInfos.firstOrNull { facingOf(it) == CameraCharacteristics.LENS_FACING_FRONT }
@@ -364,8 +384,18 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    private fun useRemote(name: String) {
+        val (h, port) = phones[name] ?: return
+        provider?.unbindAll()
+        bubble.showRemote(true)
+        bubble.visibility = View.VISIBLE
+        layoutCamera()
+        remote.connect(h, port)
+    }
+
     private fun bindCamera(info: CameraInfo) {
         val p = provider ?: return
+        remote.stop(); bubble.showRemote(false)
         try {
             p.unbindAll()
             val preview = Preview.Builder().build()
@@ -376,6 +406,24 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             toast("Não consegui abrir essa câmera: ${e.message}")
         }
+    }
+
+    private fun askPhoneAddress() {
+        val ed = android.widget.EditText(this).apply {
+            hint = "ex.: 192.168.0.15"; inputType = android.text.InputType.TYPE_CLASS_PHONE
+            setText(prefs.getString("celularIp", ""))
+        }
+        AlertDialog.Builder(this).setTitle("Endereço do celular")
+            .setMessage("Aparece na tela do app Câmera da Lousa, no celular.")
+            .setView(ed)
+            .setPositiveButton("Conectar") { _, _ ->
+                val ip = ed.text.toString().trim()
+                if (ip.isNotEmpty()) {
+                    prefs.edit().putString("celularIp", ip).apply()
+                    val n = "Celular ($ip)"; phones[n] = ip to CameraSenderActivity.PORT
+                    camId = "celular:$n"; useRemote(n)
+                }
+            }.setNegativeButton("Cancelar", null).show()
     }
 
     // ---------------- importar ----------------
@@ -562,16 +610,28 @@ class MainActivity : AppCompatActivity() {
         label("Câmera")
         val p = provider
         if (p != null) camInfos = p.availableCameraInfos
-        if (camInfos.isEmpty()) {
+        val phoneNames = phones.keys.toList()
+        val labels = camInfos.map { camLabel(it) } + phoneNames.map { "📱 $it" }
+        if (labels.isEmpty()) {
             box.addView(TextView(this).apply { text = "Nenhuma câmera encontrada. Conecte a câmera USB e abra os ajustes de novo."; setTextColor(MUTED) })
         } else {
-            val cur = camInfos.indexOfFirst { idOf(it) == camId }.let { if (it < 0) 0 else it }
-            choices(camInfos.map { camLabel(it) }, cur) { i ->
-                camId = idOf(camInfos[i]); prefs.edit().putString("camId", camId).apply()
+            val cur = if (camId?.startsWith("celular:") == true) camInfos.size + phoneNames.indexOf(camId!!.removePrefix("celular:"))
+                else camInfos.indexOfFirst { idOf(it) == camId }
+            choices(labels, if (cur < 0) 0 else cur) { i ->
                 if (!camOn) { camOn = true; prefs.edit().putBoolean("camOn", true).apply() }
-                bindCamera(camInfos[i])
+                if (i < camInfos.size) {
+                    camId = idOf(camInfos[i]); bindCamera(camInfos[i])
+                } else {
+                    val n = phoneNames[i - camInfos.size]; camId = "celular:$n"; useRemote(n)
+                }
+                prefs.edit().putString("camId", camId).apply()
             }
         }
+        box.addView(TextView(this).apply {
+            text = "Para usar o celular como câmera: instale este mesmo app no celular, abra o ícone \"Câmera da Lousa\" e deixe os dois aparelhos no mesmo Wi-Fi. Ele aparece nesta lista com 📱."
+            setTextColor(MUTED); textSize = 13f; setPadding(0, dpi(2f), 0, dpi(6f))
+        })
+        if (phoneNames.isEmpty()) choices(listOf("Digitar o endereço do celular"), -1) { askPhoneAddress() }
         choices(listOf("Redonda", "Retangular"), if (bubble.round) 0 else 1) { i ->
             bubble.round = i == 0; prefs.edit().putBoolean("camRedonda", bubble.round).apply(); layoutCamera()
         }
